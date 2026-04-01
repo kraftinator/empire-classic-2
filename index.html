@@ -92,6 +92,7 @@ canvas { display: block; }
   font-size: 14px; min-width: 300px; text-align: center;
 }
 #notification.active { display: block; }
+#notif-text { white-space: pre-wrap; text-align: left; font-size: 13px; }
 #notification button {
   margin-top: 10px; background: #333; color: #fff; border: 1px solid #aaa;
   padding: 3px 16px; cursor: pointer; font-family: 'Courier New', monospace;
@@ -140,7 +141,12 @@ canvas { display: block; }
     <button id="bar-skip">Skip</button>
     <button id="bar-wait">Wait</button>
     <button id="bar-sentry">Sentry</button>
+    <button id="bar-find">Find</button>
+    <button id="bar-home">Home</button>
+    <button id="bar-wake">Wake</button>
     <button id="bar-prod">Prod</button>
+    <button id="bar-unload">Unload</button>
+    <button id="bar-stats">Stats</button>
     <button id="bar-end-turn">End Turn</button>
   </div>
 
@@ -221,6 +227,7 @@ const COLOR = {
 };
 
 const FACTION = { NONE: 0, P1: 1, P2: 2, P3: 3 };
+let capturedCityQueue = [];
 
 const TERRAIN = { SEA: 0, LAND: 1, CITY: 2, BORDER: 3 };
 
@@ -615,6 +622,12 @@ function isInCargo(unit) {
   return G.units.some(u => u.cargo && u.cargo.includes(unit));
 }
 
+function isSkippedCargo(unit) {
+  // Fighters on carriers still get turns — only armies on transports are skipped
+  if (unit.type === 'fighter') return false;
+  return isInCargo(unit);
+}
+
 function getEffectiveSpeed(unit) {
   const def = UNIT_DEF[unit.type];
   if (def.domain === 'sea' || def.domain === 'air') {
@@ -741,6 +754,7 @@ function moveUnit(unit, tr, tc) {
       city.production = null;
       city.turnsLeft = 0;
       city.built = {};
+      if (unit.faction === FACTION.P1) capturedCityQueue.push(city);
       // Army becomes garrison — removed from mobile pool
       unit.r = tr;
       unit.c = tc;
@@ -765,10 +779,12 @@ function moveUnit(unit, tr, tc) {
       army.orders = null;
       const city = getCityAt(tr, tc);
       if (city && city.faction !== army.faction) {
+        const wasFriendly = city.faction === army.faction;
         city.faction = army.faction;
         city.production = null;
         city.turnsLeft = 0;
         city.built = {};
+        if (army.faction === FACTION.P1 && !wasFriendly) capturedCityQueue.push(city);
       }
       unit.movesLeft--;
       unit.moved = true;
@@ -847,10 +863,22 @@ function moveUnit(unit, tr, tc) {
   // Fighter range tracking
   if (unit.type === 'fighter') {
     unit.rangeUsed++;
-    // Refuel if landing on city or carrier
+    // Refuel if landing on city or carrier — turn ends, orders cleared
     const city = getCityAt(tr, tc);
     if (city && city.faction === unit.faction) {
       unit.rangeUsed = 0;
+      unit.movesLeft = 0;
+      unit.moved = true;
+      unit.orders = null;
+      unit.orderDir = null;
+    }
+    const carrier = getUnitsAt(tr, tc, unit.faction).find(u => u.type === 'carrier');
+    if (carrier) {
+      unit.rangeUsed = 0;
+      unit.movesLeft = 0;
+      unit.moved = true;
+      unit.orders = null;
+      unit.orderDir = null;
     }
   }
 
@@ -977,6 +1005,7 @@ function resolveCombat(attacker, defender) {
         city.production = null;
         city.turnsLeft = 0;
         city.built = {};
+        if (attacker.faction === FACTION.P1) capturedCityQueue.push(city);
       }
     }
   } else {
@@ -1293,7 +1322,7 @@ function startPlayerTurn() {
 
 function selectNextUnit() {
   const candidates = G.units.filter(u =>
-    u.faction === FACTION.P1 && u.movesLeft > 0 && !u.moved && !isInCargo(u) &&
+    u.faction === FACTION.P1 && u.movesLeft > 0 && !u.moved && !isSkippedCargo(u) &&
     !u.sentry && !G.waitList.includes(u.id)
   );
 
@@ -1342,7 +1371,7 @@ function selectNextUnit() {
 
   // Find next movable unit
   const ready = G.units.filter(u =>
-    u.faction === FACTION.P1 && u.movesLeft > 0 && !u.moved && !isInCargo(u) &&
+    u.faction === FACTION.P1 && u.movesLeft > 0 && !u.moved && !isSkippedCargo(u) &&
     !u.sentry && u.orders === null && !G.waitList.includes(u.id)
   );
 
@@ -1510,7 +1539,8 @@ function render() {
     const py = vr * TILE;
     const color = factionColor(unit.faction);
 
-    drawUnitIcon(unit.type, px, py, color, unit);
+    const iconType = (unit.type === 'army' && unit.sentry) ? 'army_sentry' : unit.type;
+    drawUnitIcon(iconType, px, py, color, unit);
   }
 
   // Blinking cursor on current unit
@@ -1586,115 +1616,177 @@ function updateLabels() {
 
 function drawUnitIcon(type, px, py, color, unit) {
   ctx.save();
+  // Scale factor relative to 20px base tile
+  const s = TILE / 20;
   ctx.fillStyle = color;
   ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-  const cx = px + TILE / 2;
-  const cy = py + TILE / 2;
+  ctx.lineWidth = Math.max(1, s);
 
   switch (type) {
-    case 'army':
-      // Tent: triangle over rectangle
-      ctx.beginPath();
-      ctx.moveTo(cx, py + 3);
-      ctx.lineTo(px + 4, py + 12);
-      ctx.lineTo(px + 16, py + 12);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillRect(px + 5, py + 12, 10, 4);
-      if (unit && unit.sentry) {
-        ctx.font = '8px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('S', cx, py + 18);
-      }
+    case 'army': {
+      // Tank silhouette (matching 1987 reference)
+      // Tracks/body
+      ctx.fillRect(px + 2 * s, py + 11 * s, 16 * s, 5 * s);
+      // Hull top
+      ctx.fillRect(px + 3 * s, py + 8 * s, 12 * s, 3 * s);
+      // Turret
+      ctx.fillRect(px + 6 * s, py + 5 * s, 6 * s, 3 * s);
+      // Gun barrel
+      ctx.fillRect(px + 12 * s, py + 5.5 * s, 5 * s, 1.5 * s);
       break;
+    }
 
-    case 'fighter':
-      // Aircraft: thin body, swept wings
-      ctx.beginPath();
-      ctx.moveTo(cx, py + 3);
-      ctx.lineTo(cx, py + 17);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px + 3, py + 10);
-      ctx.lineTo(px + 17, py + 10);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px + 7, py + 15);
-      ctx.lineTo(px + 13, py + 15);
-      ctx.stroke();
+    case 'army_sentry': {
+      // Flag on pole (sentry icon from 1987 reference)
+      const poleX = px + 6 * s;
+      ctx.fillRect(poleX, py + 3 * s, Math.max(1, s), 14 * s);
+      ctx.fillRect(poleX + s, py + 3 * s, 9 * s, 6 * s);
       break;
+    }
+
+    case 'fighter': {
+      // Small aircraft silhouette — top-down view
+      const cx = px + 10 * s, cy = py + 10 * s;
+      // Fuselage
+      ctx.fillRect(cx - s, py + 3 * s, 2 * s, 14 * s);
+      // Main wings (swept)
+      ctx.beginPath();
+      ctx.moveTo(cx, py + 8 * s);
+      ctx.lineTo(px + 2 * s, py + 12 * s);
+      ctx.lineTo(px + 3 * s, py + 13 * s);
+      ctx.lineTo(cx, py + 10 * s);
+      ctx.lineTo(px + 17 * s, py + 13 * s);
+      ctx.lineTo(px + 18 * s, py + 12 * s);
+      ctx.lineTo(cx, py + 8 * s);
+      ctx.fill();
+      // Tail wings
+      ctx.beginPath();
+      ctx.moveTo(cx, py + 15 * s);
+      ctx.lineTo(px + 6 * s, py + 17 * s);
+      ctx.lineTo(px + 14 * s, py + 17 * s);
+      ctx.lineTo(cx, py + 15 * s);
+      ctx.fill();
+      break;
+    }
 
     case 'transport': {
-      // Hull
+      // Ship hull — flat-bottomed, wider
       ctx.beginPath();
-      ctx.moveTo(px + 2, py + 10);
-      ctx.lineTo(px + 4, py + 16);
-      ctx.lineTo(px + 16, py + 16);
-      ctx.lineTo(px + 18, py + 10);
+      ctx.moveTo(px + 2 * s, py + 10 * s);
+      ctx.lineTo(px + 3 * s, py + 15 * s);
+      ctx.lineTo(px + 17 * s, py + 15 * s);
+      ctx.lineTo(px + 18 * s, py + 10 * s);
       ctx.closePath();
       ctx.fill();
-      // Cargo indicators
+      // Deck line
+      ctx.fillRect(px + 3 * s, py + 9 * s, 14 * s, s);
+      // Superstructure
+      ctx.fillRect(px + 8 * s, py + 6 * s, 4 * s, 3 * s);
+      // Cargo on deck if loaded
       if (unit && unit.cargo.length > 0) {
-        for (let i = 0; i < Math.min(unit.cargo.length, 3); i++) {
-          ctx.fillStyle = color === COLOR.p1 ? '#aaa' : '#ff6666';
-          ctx.fillRect(px + 5 + i * 4, py + 6, 3, 4);
+        const maxShow = Math.min(unit.cargo.length, 6);
+        for (let i = 0; i < maxShow; i++) {
+          const bx = px + (3 + i * 2) * s;
+          ctx.fillRect(bx, py + 7 * s, 1.5 * s, 2 * s);
         }
       }
       break;
     }
 
-    case 'submarine':
-      // Elongated oval with conning tower
+    case 'submarine': {
+      // Low profile hull with conning tower
       ctx.beginPath();
-      ctx.ellipse(cx, cy + 2, 8, 4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillRect(cx - 2, py + 6, 4, 4);
-      break;
-
-    case 'destroyer':
-      // Narrow pointed hull
-      ctx.beginPath();
-      ctx.moveTo(cx, py + 3);
-      ctx.lineTo(px + 5, py + 16);
-      ctx.lineTo(px + 15, py + 16);
+      ctx.moveTo(px + 2 * s, py + 12 * s);
+      ctx.lineTo(px + 4 * s, py + 15 * s);
+      ctx.lineTo(px + 16 * s, py + 15 * s);
+      ctx.lineTo(px + 18 * s, py + 12 * s);
       ctx.closePath();
       ctx.fill();
+      // Deck
+      ctx.fillRect(px + 3 * s, py + 11 * s, 14 * s, s);
+      // Conning tower
+      ctx.fillRect(px + 8 * s, py + 7 * s, 4 * s, 4 * s);
+      // Periscope
+      ctx.fillRect(px + 9.5 * s, py + 5 * s, s, 2 * s);
       break;
+    }
 
-    case 'cruiser':
-      // Medium hull with superstructure
+    case 'destroyer': {
+      // Narrow pointed hull with smoke/flame
       ctx.beginPath();
-      ctx.moveTo(cx, py + 3);
-      ctx.lineTo(px + 3, py + 16);
-      ctx.lineTo(px + 17, py + 16);
+      ctx.moveTo(px + 3 * s, py + 15 * s);
+      ctx.lineTo(px + 10 * s, py + 15 * s);
+      ctx.lineTo(px + 16 * s, py + 12 * s);
+      ctx.lineTo(px + 10 * s, py + 10 * s);
+      ctx.lineTo(px + 3 * s, py + 10 * s);
       ctx.closePath();
       ctx.fill();
-      ctx.fillRect(cx - 3, py + 6, 6, 4);
+      // Superstructure
+      ctx.fillRect(px + 5 * s, py + 7 * s, 3 * s, 3 * s);
+      // Smoke/flame
+      drawFlame(px + 6 * s, py + 3 * s, 2 * s, 4 * s, color);
       break;
+    }
 
-    case 'battleship':
-      // Wide heavy hull with turrets
+    case 'cruiser': {
+      // Medium hull with superstructure and smoke
       ctx.beginPath();
-      ctx.moveTo(cx, py + 2);
-      ctx.lineTo(px + 2, py + 17);
-      ctx.lineTo(px + 18, py + 17);
+      ctx.moveTo(px + 2 * s, py + 15 * s);
+      ctx.lineTo(px + 12 * s, py + 15 * s);
+      ctx.lineTo(px + 17 * s, py + 12 * s);
+      ctx.lineTo(px + 12 * s, py + 10 * s);
+      ctx.lineTo(px + 2 * s, py + 10 * s);
       ctx.closePath();
       ctx.fill();
-      ctx.fillStyle = color === COLOR.p1 ? '#ccc' : '#880000';
-      ctx.fillRect(px + 5, py + 5, 3, 3);
-      ctx.fillRect(px + 12, py + 5, 3, 3);
+      // Superstructure
+      ctx.fillRect(px + 4 * s, py + 7 * s, 5 * s, 3 * s);
+      ctx.fillRect(px + 10 * s, py + 8 * s, 3 * s, 2 * s);
+      // Smoke/flame
+      drawFlame(px + 5 * s, py + 3 * s, 3 * s, 4 * s, color);
       break;
+    }
+
+    case 'battleship': {
+      // Wide heavy hull with turrets and smoke
+      ctx.beginPath();
+      ctx.moveTo(px + 1 * s, py + 16 * s);
+      ctx.lineTo(px + 13 * s, py + 16 * s);
+      ctx.lineTo(px + 18 * s, py + 12 * s);
+      ctx.lineTo(px + 13 * s, py + 9 * s);
+      ctx.lineTo(px + 1 * s, py + 9 * s);
+      ctx.closePath();
+      ctx.fill();
+      // Superstructure
+      ctx.fillRect(px + 3 * s, py + 6 * s, 4 * s, 3 * s);
+      ctx.fillRect(px + 8 * s, py + 7 * s, 4 * s, 2 * s);
+      // Turrets
+      ctx.fillRect(px + 13 * s, py + 10 * s, 2 * s, 2 * s);
+      ctx.fillRect(px + 2 * s, py + 10 * s, 2 * s, 2 * s);
+      // Smoke/flame
+      drawFlame(px + 4 * s, py + 2 * s, 3 * s, 4 * s, color);
+      break;
+    }
 
     case 'carrier': {
-      // Long flat deck
-      ctx.fillRect(px + 2, py + 8, 16, 8);
-      ctx.fillRect(px + 4, py + 6, 12, 2);
-      // Tick marks for loaded fighters
+      // Long flat deck — aircraft carrier shape
+      // Flight deck (long rectangle)
+      ctx.fillRect(px + 2 * s, py + 9 * s, 16 * s, 6 * s);
+      // Bow taper
+      ctx.beginPath();
+      ctx.moveTo(px + 18 * s, py + 9 * s);
+      ctx.lineTo(px + 19 * s, py + 12 * s);
+      ctx.lineTo(px + 18 * s, py + 15 * s);
+      ctx.fill();
+      // Island superstructure (small, offset)
+      ctx.fillRect(px + 7 * s, py + 6 * s, 3 * s, 3 * s);
+      // Aircraft on deck if loaded
       if (unit && unit.cargo.length > 0) {
-        ctx.fillStyle = color === COLOR.p1 ? '#aaa' : '#ff6666';
-        for (let i = 0; i < Math.min(unit.cargo.length, 4); i++) {
-          ctx.fillRect(px + 4 + i * 3, py + 4, 2, 2);
+        const maxShow = Math.min(unit.cargo.length, 4);
+        for (let i = 0; i < maxShow; i++) {
+          // Small aircraft tick marks
+          const ax = px + (3 + i * 3.5) * s;
+          ctx.fillRect(ax, py + 7 * s, 2 * s, s);
+          ctx.fillRect(ax + 0.5 * s, py + 6 * s, s, 3 * s);
         }
       }
       break;
@@ -1703,29 +1795,53 @@ function drawUnitIcon(type, px, py, color, unit) {
   ctx.restore();
 }
 
+function drawFlame(x, y, w, h, color) {
+  // Flickering flame/smoke shape
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x, y + h);
+  ctx.lineTo(x + w * 0.5, y);
+  ctx.lineTo(x + w, y + h);
+  ctx.closePath();
+  ctx.fill();
+  // Second flicker
+  ctx.beginPath();
+  ctx.moveTo(x + w * 0.2, y + h * 0.3);
+  ctx.lineTo(x + w * 0.5, y - h * 0.2);
+  ctx.lineTo(x + w * 0.8, y + h * 0.3);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function drawCityIcon(px, py, city) {
   ctx.save();
+  const s = TILE / 20;
   const faction = city ? city.faction : FACTION.NONE;
 
   if (faction === FACTION.NONE) {
-    // White icon on black
     ctx.fillStyle = '#000';
-    ctx.fillRect(px + 1, py + 1, TILE - 2, TILE - 2);
+    ctx.fillRect(px, py, TILE, TILE);
     ctx.fillStyle = '#fff';
   } else {
-    // Player colored background already drawn
+    ctx.fillStyle = factionColor(faction);
+    ctx.fillRect(px, py, TILE, TILE);
+    // Icon color contrasts with background
     ctx.fillStyle = (faction === FACTION.P1 || faction === FACTION.P3) ? '#000' : '#fff';
   }
 
-  // Grid/building icon
-  const ox = px + 4, oy = py + 4;
-  ctx.fillRect(ox, oy, 3, 3);
-  ctx.fillRect(ox + 5, oy, 3, 3);
-  ctx.fillRect(ox + 9, oy, 3, 3);
-  ctx.fillRect(ox, oy + 5, 3, 3);
-  ctx.fillRect(ox + 5, oy + 5, 3, 3);
-  ctx.fillRect(ox + 9, oy + 5, 3, 3);
-  ctx.fillRect(ox, oy + 9, 12, 2);
+  // 3x3 building grid matching the 1987 reference
+  const gx = px + 3 * s, gy = py + 3 * s;
+  const bw = 3 * s, bh = 3 * s, gap = 1.5 * s;
+
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      ctx.fillRect(
+        gx + col * (bw + gap),
+        gy + row * (bh + gap),
+        bw, bh
+      );
+    }
+  }
 
   ctx.restore();
 }
@@ -1938,6 +2054,14 @@ function afterMove(unit) {
   checkWin();
   if (G.gameOver) { render(); return; }
 
+  // Show production modal for captured cities
+  if (capturedCityQueue.length > 0) {
+    const city = capturedCityQueue.shift();
+    render();
+    openProductionModal(city);
+    return;
+  }
+
   if (!G.units.includes(unit) || unit.movesLeft <= 0) {
     selectNextUnit();
   } else {
@@ -2048,37 +2172,34 @@ function handleMapClick(e) {
 
   if (mr < 0 || mr >= CONFIG.mapRows || mc < 0 || mc >= CONFIG.mapCols) return;
 
+  // Wake mode — tap a sentry unit to wake it
+  if (G.phase === 'wake') {
+    const sentries = getUnitsAt(mr, mc, FACTION.P1).filter(u => u.sentry);
+    if (sentries.length > 0) {
+      for (const u of sentries) {
+        u.sentry = false;
+        u.orders = null;
+        u.moved = false;
+      }
+    }
+    G.phase = 'player';
+    selectNextUnit();
+    render();
+    return;
+  }
+
   const unit = getCurrentUnit();
 
-  // If we have a unit, try to move toward clicked tile
+  // Only move unit if tapping an adjacent tile
   if (unit) {
     const dr = mr - unit.r;
     const dc = mc - unit.c;
 
     if (Math.abs(dr) <= 1 && Math.abs(dc) <= 1 && (dr !== 0 || dc !== 0)) {
-      // Adjacent — direct move
       if (canMoveTo(unit, mr, mc)) {
         moveUnit(unit, mr, mc);
         afterMove(unit);
         return;
-      }
-    } else if (dr !== 0 || dc !== 0) {
-      // Non-adjacent — step toward
-      const sr = Math.sign(dr), sc = Math.sign(dc);
-      const tries = [];
-      if (sr !== 0 && sc !== 0) {
-        tries.push([unit.r + sr, unit.c + sc], [unit.r + sr, unit.c], [unit.r, unit.c + sc]);
-      } else if (sr !== 0) {
-        tries.push([unit.r + sr, unit.c]);
-      } else {
-        tries.push([unit.r, unit.c + sc]);
-      }
-      for (const [tr, tc] of tries) {
-        if (canMoveTo(unit, tr, tc)) {
-          moveUnit(unit, tr, tc);
-          afterMove(unit);
-          return;
-        }
       }
     }
   }
@@ -2180,6 +2301,13 @@ function doSentry() {
 function doEndTurn() {
   if (G.phase === 'player' && !G.gameOver) endPlayerTurn();
 }
+function doWake() {
+  // Wake all sentry units at the current location, or enter wake-tap mode
+  G.phase = 'wake';
+  document.getElementById('hud-mode').textContent = 'MODE: WAKE (tap unit)';
+  render();
+}
+
 function doProd() {
   const unit = getCurrentUnit();
   if (unit) {
@@ -2199,7 +2327,68 @@ document.getElementById('bar-end-turn').addEventListener('click', doEndTurn);
 document.getElementById('bar-skip').addEventListener('click', doSkip);
 document.getElementById('bar-wait').addEventListener('click', doWait);
 document.getElementById('bar-sentry').addEventListener('click', doSentry);
+document.getElementById('bar-find').addEventListener('click', () => {
+  const unit = getCurrentUnit();
+  if (unit) {
+    centerViewport(unit.r, unit.c);
+    render();
+  }
+});
+document.getElementById('bar-home').addEventListener('click', () => {
+  const unit = getCurrentUnit();
+  if (unit) {
+    unit.orders = 'goHome';
+    executeGoHome(unit);
+    afterMove(unit);
+  }
+});
+document.getElementById('bar-wake').addEventListener('click', doWake);
 document.getElementById('bar-prod').addEventListener('click', doProd);
+document.getElementById('bar-unload').addEventListener('click', () => {
+  const unit = getCurrentUnit();
+  if (!unit || unit.cargo.length === 0) return;
+
+  if (unit.type === 'carrier') {
+    // Launch one fighter from carrier
+    const fighter = unit.cargo.shift();
+    fighter.sentry = false;
+    fighter.orders = null;
+    fighter.moved = false;
+    fighter.movesLeft = getEffectiveSpeed(fighter);
+    // Fighter stays on same tile, ready to move
+    updateFog();
+    render();
+  } else if (unit.type === 'transport') {
+    // Wake all armies for unloading — they'll be movable when transport moves adjacent to land
+    for (const c of unit.cargo) {
+      c.sentry = false;
+      c.orders = null;
+    }
+    queueNotification(`${unit.cargo.length} armies ready. Move transport adjacent to land to unload.`);
+  }
+});
+document.getElementById('bar-stats').addEventListener('click', () => {
+  const factions = [
+    { name: 'You (White)', f: FACTION.P1 },
+    { name: 'Red AI', f: FACTION.P2 },
+    { name: 'Yellow AI', f: FACTION.P3 },
+  ];
+  let msg = '';
+  for (const { name, f } of factions) {
+    const cities = G.cities.filter(c => c.faction === f).length;
+    const units = G.units.filter(u => u.faction === f && !isInCargo(u));
+    const counts = {};
+    for (const u of units) {
+      const n = UNIT_DEF[u.type].name;
+      counts[n] = (counts[n] || 0) + 1;
+    }
+    const unitStr = Object.entries(counts).map(([n, c]) => `${n}: ${c}`).join(', ') || 'none';
+    msg += `${name}\nCities: ${cities}  Units: ${units.length}\n${unitStr}\n\n`;
+  }
+  const neutral = G.cities.filter(c => c.faction === FACTION.NONE).length;
+  msg += `Neutral cities: ${neutral}`;
+  queueNotification(msg);
+});
 
 // ============================================================
 // 15. NOTIFICATIONS
