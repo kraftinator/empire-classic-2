@@ -174,9 +174,9 @@ canvas { display: block; }
 // ============================================================
 
 const TEST_CONFIG = {
-  mapRows: 30,
-  mapCols: 50,
-  cityCount: 30,
+  mapRows: 24,
+  mapCols: 40,
+  cityCount: 20,
   label: 'TEST'
 };
 
@@ -210,8 +210,8 @@ function recalcViewport() {
 }
 
 const COLOR = {
-  land: '#2a7a2a',
-  sea: '#0055aa',
+  land: '#008000',
+  sea: '#0000ff',
   unexplored: '#000000',
   border: '#555555',
   gridLine: '#1a1a1a',
@@ -224,6 +224,96 @@ const COLOR = {
   msgText: '#ffffff',
   labelText: '#aaaaaa',
 };
+
+// Original Empire EGA terrain tile patterns (10x10)
+// Each pattern uses indices: 0=base, 1=accent1, 2=accent2
+const TERRAIN_PATTERNS = {
+  sea: {
+    colors: ['#0000ff', '#0080ff', '#00ffff'],
+    pattern: [
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,1,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,1,0,0],
+      [0,0,0,0,2,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,1,0,0,0,0,1,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+    ]
+  },
+  land: {
+    colors: ['#008000', '#808000', '#00ff00'],
+    pattern: [
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,1,0,0,0,1,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,2,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,1,0],
+      [0,0,1,0,0,0,0,0,1,0],
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+    ]
+  },
+  city: {
+    colors: ['#008000', '#000000'],
+    pattern: [
+      [0,0,0,0,0,0,0,0,0,0],
+      [0,0,0,0,0,1,0,0,1,0],
+      [0,0,1,1,0,1,0,1,1,0],
+      [0,0,0,1,0,1,1,1,0,0],
+      [0,0,0,1,1,1,1,0,0,0],
+      [0,0,1,1,1,1,1,1,1,0],
+      [0,0,0,0,1,1,1,0,0,0],
+      [0,0,0,1,1,1,1,1,0,0],
+      [0,0,1,0,0,1,0,0,0,0],
+      [0,0,0,0,0,0,0,0,0,0],
+    ]
+  },
+};
+
+// Pre-render terrain tile canvases for performance
+const _terrainCanvases = {};
+function getTerrainCanvas(type) {
+  if (_terrainCanvases[type] && _terrainCanvases[type]._tile === TILE) return _terrainCanvases[type];
+  const tp = TERRAIN_PATTERNS[type];
+  const c = document.createElement('canvas');
+  c.width = TILE; c.height = TILE;
+  c._tile = TILE;
+  const tc = c.getContext('2d');
+  const ps = TILE / 10;
+  for (let r = 0; r < 10; r++) {
+    for (let col = 0; col < 10; col++) {
+      tc.fillStyle = tp.colors[tp.pattern[r][col]];
+      tc.fillRect(col * ps, r * ps, Math.ceil(ps), Math.ceil(ps));
+    }
+  }
+  _terrainCanvases[type] = c;
+  return c;
+}
+
+// Pre-render city tiles: green background with building pattern in faction color
+const _cityCanvases = {};
+function getCityCanvas(factionColor) {
+  const key = factionColor + '_' + TILE;
+  if (_cityCanvases[key]) return _cityCanvases[key];
+  const tp = TERRAIN_PATTERNS.city;
+  const c = document.createElement('canvas');
+  c.width = TILE; c.height = TILE;
+  const tc = c.getContext('2d');
+  const ps = TILE / 10;
+  for (let r = 0; r < 10; r++) {
+    for (let col = 0; col < 10; col++) {
+      tc.fillStyle = tp.pattern[r][col] === 0 ? '#008000' : factionColor;
+      tc.fillRect(col * ps, r * ps, Math.ceil(ps), Math.ceil(ps));
+    }
+  }
+  _cityCanvases[key] = c;
+  return c;
+}
 
 const FACTION = { NONE: 0, P1: 1, P2: 2, P3: 3 };
 let capturedCityQueue = [];
@@ -417,8 +507,23 @@ function isMainOcean(r, c) {
   return false;
 }
 
-const CITY_NAMES = [];
-for (let i = 0; i < 200; i++) CITY_NAMES.push('City ' + i);
+const CITY_NAMES = [
+  'Thermopylae', 'Marathon', 'Salamis', 'Agincourt', 'Hastings',
+  'Waterloo', 'Gettysburg', 'Little Big Horn', 'Cannae', 'Austerlitz',
+  'Corinth', 'Stalingrad', 'Verdun', 'Amiens', 'Caen',
+  'Cadiz', 'Kursk', 'Gallipoli', 'Yorktown', 'Charlestown',
+  'Antietam', 'Shiloh', 'Crécy', 'Lepanto', 'Isandlwana',
+  'Borodino', 'Sevastopol', 'El Alamein', 'Saratoga', 'Zama',
+  'Arbela', 'Châlons', 'Tours', 'Vienna', 'Blenheim',
+  'Plassey', 'Quebec', 'Valmy', 'Jena', 'Leipzig',
+  'Sedan', 'Reims', 'Aarhus', 'Guadalcanal', 'Okinawa',
+  'Inchon', 'Dien Bien Phu', 'Manassas', 'Bannockburn', 'Adrianople',
+  'Pharsalus', 'Actium', 'Detmold', 'Constantinople', 'Orleans',
+  'Pavia', 'Lützen', 'Rocroi', 'Balaclava', 'Sevilla',
+  'Richmond', 'Vicksburg', 'Chancellorsville', 'Tannenberg', 'Ypres',
+  'Passchendaele', 'Dunkirk', 'Tobruk', 'Arnhem', 'Bastogne',
+  'Berlin', 'Carthage', 'Troy', 'Kadesh', 'Megiddo',
+];
 
 function placeCities() {
   G.cities = [];
@@ -1166,19 +1271,49 @@ function aiTurnAll() {
 }
 
 function aiTurn(aiFaction) {
-  // Production
+  // Count units by type
+  const counts = {};
+  for (const t of ALL_UNITS) counts[t] = 0;
+  for (const u of G.units) {
+    if (u.faction === aiFaction) counts[u.type]++;
+  }
+  const cityCount = G.cities.filter(c => c.faction === aiFaction).length;
+  const totalUnits = G.units.filter(u => u.faction === aiFaction).length;
+
+  // Production — build a balanced force
   for (const city of G.cities) {
     if (city.faction !== aiFaction) continue;
     if (!city.production) {
       const coastal = isCoastal(city.r, city.c);
-      // Priority: armies, then transports, then destroyers
-      const armyCount = G.units.filter(u => u.faction === aiFaction && u.type === 'army').length;
-      const transportCount = G.units.filter(u => u.faction === aiFaction && u.type === 'transport').length;
-
       let pick = 'army';
-      if (armyCount > 5 && coastal && transportCount < 2) pick = 'transport';
-      else if (armyCount > 3 && coastal && Math.random() < 0.3) pick = 'destroyer';
-      else if (coastal && Math.random() < 0.15) pick = 'submarine';
+
+      if (coastal) {
+        // Weighted selection for coastal cities
+        const r = Math.random();
+        if (counts.army < 4 || (counts.army < cityCount * 2 && r < 0.4)) {
+          pick = 'army';
+        } else if (counts.fighter < 3 && r < 0.55) {
+          pick = 'fighter';
+        } else if (counts.transport < 2 && counts.army > 4) {
+          pick = 'transport';
+        } else if (counts.destroyer < 3 && r < 0.7) {
+          pick = 'destroyer';
+        } else if (counts.submarine < 2 && r < 0.8) {
+          pick = 'submarine';
+        } else if (counts.cruiser < 2 && r < 0.88) {
+          pick = 'cruiser';
+        } else if (counts.battleship < 2 && r < 0.95) {
+          pick = 'battleship';
+        } else if (counts.carrier < 1 && counts.fighter >= 2) {
+          pick = 'carrier';
+        } else {
+          pick = ['army','fighter','destroyer'][Math.floor(Math.random() * 3)];
+        }
+      } else {
+        // Inland cities: armies or fighters
+        if (counts.army < cityCount * 2 || Math.random() < 0.6) pick = 'army';
+        else pick = 'fighter';
+      }
 
       city.production = pick;
       const cost = city.built[pick] ? PROD_TABLE[pick].repeat : PROD_TABLE[pick].first;
@@ -1200,10 +1335,32 @@ function aiTurn(aiFaction) {
 
       if (unit.type === 'army') {
         target = findNearestCity(unit.r, unit.c, c => c.faction !== aiFaction);
+      } else if (unit.type === 'fighter') {
+        // Fighters: attack enemies or explore, but must return to refuel
+        const halfRange = Math.floor(UNIT_DEF.fighter.maxRange / 2);
+        const nearestFriendly = findNearestCity(unit.r, unit.c, c => c.faction === aiFaction);
+        const distHome = nearestFriendly ? Math.abs(nearestFriendly.r - unit.r) + Math.abs(nearestFriendly.c - unit.c) : Infinity;
+        const fuelLeft = UNIT_DEF.fighter.maxRange - unit.rangeUsed;
+
+        if (fuelLeft <= distHome + 2) {
+          // Head home to refuel
+          if (nearestFriendly) target = { r: nearestFriendly.r, c: nearestFriendly.c };
+        } else {
+          // Attack nearest enemy or head toward enemy cities
+          const enemy = findNearestEnemyUnit(unit.r, unit.c, aiFaction, unit);
+          if (enemy && Math.abs(enemy.r - unit.r) + Math.abs(enemy.c - unit.c) < fuelLeft - distHome) {
+            target = { r: enemy.r, c: enemy.c };
+          } else {
+            const enemyCity = findNearestCity(unit.r, unit.c, c => c.faction !== aiFaction);
+            if (enemyCity) target = { r: enemyCity.r, c: enemyCity.c };
+          }
+        }
       } else if (def.domain === 'sea') {
+        // Sea units: hunt enemies, then patrol toward enemy coastal cities
         const enemy = findNearestEnemyUnit(unit.r, unit.c, aiFaction, unit);
-        if (enemy) target = { r: enemy.r, c: enemy.c };
-        else {
+        if (enemy) {
+          target = { r: enemy.r, c: enemy.c };
+        } else {
           const city = findNearestCity(unit.r, unit.c, c => c.faction !== aiFaction && isCoastal(c.r, c.c));
           if (city) target = { r: city.r, c: city.c };
         }
@@ -1254,7 +1411,7 @@ function aiTurn(aiFaction) {
 
   // Destroy fighters that are out of range
   for (const unit of [...G.units]) {
-    if (unit.faction !== FACTION.P2 || unit.type !== 'fighter') continue;
+    if (unit.faction !== aiFaction || unit.type !== 'fighter') continue;
     if (unit.rangeUsed >= UNIT_DEF.fighter.maxRange) {
       const city = getCityAt(unit.r, unit.c);
       const carrier = getUnitsAt(unit.r, unit.c, aiFaction).find(u => u.type === 'carrier');
@@ -1493,11 +1650,11 @@ function render() {
         continue;
       }
 
-      // Base terrain
+      // Base terrain — textured tiles matching original Empire
       if (tile === TERRAIN.SEA) {
-        ctx.fillStyle = COLOR.sea;
+        ctx.drawImage(getTerrainCanvas('sea'), px, py);
       } else if (tile === TERRAIN.LAND) {
-        ctx.fillStyle = COLOR.land;
+        ctx.drawImage(getTerrainCanvas('land'), px, py);
       } else if (tile === TERRAIN.CITY) {
         const city = getCityAt(mr, mc);
         if (city && city.faction !== FACTION.NONE) {
@@ -1505,13 +1662,8 @@ function render() {
         } else {
           ctx.fillStyle = '#000';
         }
-      }
-      ctx.fillRect(px, py, TILE, TILE);
-
-      // City icon
-      if (tile === TERRAIN.CITY) {
-        const city = getCityAt(mr, mc);
-        drawCityIcon(px, py, city);
+        ctx.fillRect(px, py, TILE, TILE);
+        drawCityIcon(px, py, getCityAt(mr, mc));
       }
 
       // Grid lines
