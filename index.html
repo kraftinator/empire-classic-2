@@ -50,13 +50,12 @@ canvas { display: block; }
 
 /* Bottom toolbar */
 #bottom-bar {
-  background: #111; border-top: 1px solid #555; padding: 6px 8px;
-  display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+  background: #111; border-top: 1px solid #555; padding: 4px 4px;
+  display: flex; gap: 4px; justify-content: center; flex-wrap: wrap;
 }
 #bottom-bar button {
-  background: #333; color: #fff; border: 1px solid #666; padding: 8px 16px;
-  font-family: 'Courier New', monospace; font-size: 14px; cursor: pointer;
-  min-width: 60px;
+  background: #333; color: #fff; border: 1px solid #666; padding: 6px 10px;
+  font-family: 'Courier New', monospace; font-size: 12px; cursor: pointer;
 }
 #bottom-bar button:hover, #bottom-bar button:active { background: #555; }
 #bottom-bar #bar-end-turn { background: #660000; border-color: #aa0000; }
@@ -140,12 +139,12 @@ canvas { display: block; }
   <div id="bottom-bar">
     <button id="bar-skip">Skip</button>
     <button id="bar-wait">Wait</button>
-    <button id="bar-sentry">Sentry</button>
+    <button id="bar-sentry">Sntry</button>
     <button id="bar-find">Find</button>
     <button id="bar-home">Home</button>
     <button id="bar-wake">Wake</button>
     <button id="bar-prod">Prod</button>
-    <button id="bar-unload">Unload</button>
+    <button id="bar-unload">Unld</button>
     <button id="bar-stats">Stats</button>
     <button id="bar-end-turn">End Turn</button>
   </div>
@@ -195,14 +194,14 @@ const CONFIG = TEST_CONFIG;
 // ============================================================
 
 const IS_TOUCH = 'ontouchstart' in window;
-let TILE = IS_TOUCH ? 36 : 20;
+let TILE = IS_TOUCH ? 24 : 20;
 let VP_ROWS = 20;
 let VP_COLS = 36;
 
 function recalcViewport() {
   const menuH = 44; // top bar + message line
   const colLabelH = 20;
-  const bottomBarH = 46; // bottom toolbar
+  const bottomBarH = 64; // bottom toolbar (2 rows)
   const rowLabelW = 28;
   const availW = window.innerWidth - rowLabelW;
   const availH = window.innerHeight - menuH - colLabelH - bottomBarH;
@@ -711,6 +710,11 @@ function canMoveTo(unit, tr, tc) {
     if (unit.type === 'transport' && unit.cargo.length > 0 && (tile === TERRAIN.LAND || tile === TERRAIN.CITY)) {
       return true;
     }
+    // Ships can attack enemy units on land/city tiles (ship stays in place)
+    if (tile === TERRAIN.LAND || tile === TERRAIN.CITY) {
+      const enemies = getUnitsAt(tr, tc).filter(u => u.faction !== unit.faction && u.faction !== FACTION.NONE);
+      if (enemies.length > 0 && canAttack(unit, enemies[0])) return true;
+    }
     // Ships can dock at friendly coastal cities
     if (tile === TERRAIN.CITY) {
       const city = getCityAt(tr, tc);
@@ -750,6 +754,11 @@ function moveUnit(unit, tr, tc) {
   if (def.canCapture && G.map[tr][tc] === TERRAIN.CITY) {
     const city = getCityAt(tr, tc);
     if (city && city.faction !== unit.faction) {
+      // Destroy all enemy units in the city
+      const enemiesInCity = getUnitsAt(tr, tc).filter(u => u.faction !== unit.faction && u.faction !== FACTION.NONE);
+      for (const enemy of enemiesInCity) {
+        removeUnit(enemy);
+      }
       city.faction = unit.faction;
       city.production = null;
       city.turnsLeft = 0;
@@ -935,9 +944,6 @@ function canAttack(attacker, defender) {
   // Transport: can't attack armies or see subs (visibility already checked)
   if (attacker.type === 'transport' && defender.type === 'army') return false;
 
-  // Destroyer: can't attack armies
-  if (attacker.type === 'destroyer' && defender.type === 'army') return false;
-
   // Carrier: can't attack armies
   if (attacker.type === 'carrier' && defender.type === 'army') return false;
 
@@ -977,7 +983,7 @@ function resolveCombat(attacker, defender) {
     if (rounds.length > 100) break; // safety
   }
 
-  const attackerWon = aHp > 0;
+  const attackerWon = aHp > 0 || (aHp <= 0 && dHp <= 0); // attacker wins ties
   const isPlayerAttacker = attacker.faction === FACTION.P1;
   const playerWon = (isPlayerAttacker && attackerWon) || (!isPlayerAttacker && !attackerWon);
 
@@ -988,9 +994,17 @@ function resolveCombat(attacker, defender) {
 
   if (attackerWon) {
     attacker.hp = aHp;
+    const defR = defender.r, defC = defender.c;
     removeUnit(defender);
-    attacker.r = defender.r;
-    attacker.c = defender.c;
+
+    // Sea units don't advance onto land tiles
+    const targetTile = G.map[defR][defC];
+    const seaAttackingLand = UNIT_DEF[attacker.type].domain === 'sea' &&
+      (targetTile === TERRAIN.LAND || (targetTile === TERRAIN.CITY && !isCoastal(defR, defC)));
+    if (!seaAttackingLand) {
+      attacker.r = defR;
+      attacker.c = defC;
+    }
     attacker.movesLeft--;
     attacker.moved = true;
 
@@ -1001,6 +1015,13 @@ function resolveCombat(attacker, defender) {
     if (aDef.canCapture && G.map[attacker.r][attacker.c] === TERRAIN.CITY) {
       const city = getCityAt(attacker.r, attacker.c);
       if (city && city.faction !== attacker.faction) {
+        // Destroy remaining enemy units in the city
+        const enemiesInCity = getUnitsAt(attacker.r, attacker.c).filter(
+          u => u.faction !== attacker.faction && u.faction !== FACTION.NONE && u !== attacker
+        );
+        for (const enemy of enemiesInCity) {
+          removeUnit(enemy);
+        }
         city.faction = attacker.faction;
         city.production = null;
         city.turnsLeft = 0;
@@ -1086,16 +1107,7 @@ function tickProduction(faction) {
       const def = UNIT_DEF[type];
 
       let sr = city.r, sc = city.c;
-      if (def.domain === 'sea') {
-        // Spawn on adjacent sea tile
-        const adj = getAdjacent4(city.r, city.c).filter(([r, c]) => G.map[r][c] === TERRAIN.SEA);
-        if (adj.length > 0) {
-          [sr, sc] = adj[Math.floor(Math.random() * adj.length)];
-        } else {
-          city.turnsLeft = 1;
-          continue;
-        }
-      }
+      // All units (including ships) spawn in the city
 
       const newUnit = spawnUnit(type, faction, sr, sc);
       city.built[type] = true;
@@ -1511,8 +1523,10 @@ function render() {
     }
   }
 
-  // Draw units
+  // Draw units (skip current unit — it gets drawn last on top)
+  const cur = getCurrentUnit();
   for (const unit of G.units) {
+    if (unit === cur) continue; // draw last
     if (isInCargo(unit)) continue;
     const vr = unit.r - G.vpR;
     const vc = unit.c - G.vpC;
@@ -1521,13 +1535,11 @@ function render() {
     // Visibility check for enemy units
     if (unit.faction !== FACTION.P1) {
       if (G.fog[unit.r][unit.c] !== FOG.VISIBLE) continue;
-      // Check if any player unit can see this unit
       const visible = G.units.some(pu =>
         pu.faction === FACTION.P1 && !isInCargo(pu) &&
         Math.abs(pu.r - unit.r) <= 1 && Math.abs(pu.c - unit.c) <= 1 &&
         canSeeUnit(pu, unit)
       );
-      // Also visible if adjacent to player city
       const cityVisible = G.cities.some(city =>
         city.faction === FACTION.P1 &&
         Math.abs(city.r - unit.r) <= 1 && Math.abs(city.c - unit.c) <= 1
@@ -1539,18 +1551,33 @@ function render() {
     const py = vr * TILE;
     const color = factionColor(unit.faction);
 
+    if (G.map[unit.r][unit.c] === TERRAIN.CITY) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(px + 1, py + 1, TILE - 2, TILE - 2);
+    }
+
     const iconType = (unit.type === 'army' && unit.sentry) ? 'army_sentry' : unit.type;
     drawUnitIcon(iconType, px, py, color, unit);
   }
 
-  // Blinking cursor on current unit
-  const cur = getCurrentUnit();
+  // Draw current unit LAST (on top) with blinking cursor
   if (cur) {
     const vr = cur.r - G.vpR;
     const vc = cur.c - G.vpC;
     if (vr >= 0 && vr < VP_ROWS && vc >= 0 && vc < VP_COLS) {
       const px = vc * TILE;
       const py = vr * TILE;
+
+      // Black background on city
+      if (G.map[cur.r][cur.c] === TERRAIN.CITY) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(px + 1, py + 1, TILE - 2, TILE - 2);
+      }
+
+      const iconType = (cur.type === 'army' && cur.sentry) ? 'army_sentry' : cur.type;
+      drawUnitIcon(iconType, px, py, factionColor(cur.faction), cur);
+
+      // Blinking border
       const blink = Math.floor(Date.now() / 400) % 2;
       if (blink) {
         ctx.strokeStyle = '#ff0';
@@ -2059,6 +2086,20 @@ function afterMove(unit) {
     const city = capturedCityQueue.shift();
     render();
     openProductionModal(city);
+    return;
+  }
+
+  // If combat just happened, delay moving to the next unit so player can see the result
+  if (combatLogShowing) {
+    render();
+    setTimeout(() => {
+      if (!G.units.includes(unit) || unit.movesLeft <= 0) {
+        selectNextUnit();
+      } else {
+        centerViewport(unit.r, unit.c);
+      }
+      render();
+    }, 2000);
     return;
   }
 
