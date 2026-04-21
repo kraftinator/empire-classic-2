@@ -524,11 +524,19 @@ const CITY_NAMES = [
   'Passchendaele', 'Dunkirk', 'Tobruk', 'Arnhem', 'Bastogne',
   'Berlin', 'Carthage', 'Troy', 'Kadesh', 'Megiddo',
 ];
+let shuffledNames = [];
 
 function placeCities() {
   G.cities = [];
   const target = CONFIG.cityCount;
   const masses = findLandMasses();
+
+  // Shuffle city names
+  shuffledNames = [...CITY_NAMES];
+  for (let i = shuffledNames.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffledNames[i], shuffledNames[j]] = [shuffledNames[j], shuffledNames[i]];
+  }
 
   // Filter out single-tile lakes for city placement validation
   // (cities shouldn't be on tiles adjacent only to small ponds)
@@ -677,7 +685,7 @@ function placeCity(r, c, nameIdx) {
     production: null,
     turnsLeft: 0,
     built: {},
-    name: CITY_NAMES[nameIdx] || ('City ' + nameIdx),
+    name: shuffledNames[nameIdx] || ('City ' + nameIdx),
   });
 }
 
