@@ -146,7 +146,18 @@ canvas { display: block; }
     <button id="bar-prod">Prod</button>
     <button id="bar-unload">Unld</button>
     <button id="bar-stats">Stats</button>
+    <button id="bar-save">Save</button>
+    <button id="bar-load">Load</button>
     <button id="bar-end-turn">End Turn</button>
+  </div>
+
+  <!-- Save/Load slot modal -->
+  <div id="save-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; display:none; align-items:center; justify-content:center;">
+    <div style="background:#222; border:1px solid #666; padding:16px; font-family:'Courier New',monospace; color:#fff; min-width:280px;">
+      <h3 id="save-title" style="margin:0 0 12px 0; font-size:16px;"></h3>
+      <div id="save-slots"></div>
+      <button id="save-cancel" style="margin-top:12px; background:#333; color:#fff; border:1px solid #666; padding:6px 16px; font-family:'Courier New',monospace; cursor:pointer;">Cancel</button>
+    </div>
   </div>
 
   <div id="modal-overlay">
@@ -526,6 +537,11 @@ const CITY_NAMES = [
 ];
 let shuffledNames = [];
 
+// Blast sprite from original Empire (20x20 with transparency)
+const _blastImg = new Image();
+_blastImg.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAYAAACNiR0NAAAAu0lEQVR4nI2Siw6FMAhD+f+frrm5DjtaxkwwbsKhPCIicDL83oNPsRn4Zw5+n88AQ3oLYN2XhH2ZDOQ7Bhr1IhnbhQG+vxJYKtA+oDiL7eougNAAUinZBZhfrO4C2PTR9BAmyJR7PxQHQGy94XsLlKFEA6kJboCtynkgqAceULsuQQlEkMsCk8UNpBXCJQrrpJLrbEum4HWu5fMzAkmA37+yQiZegRVam9XZEZiNxga2K3alcIMuZX2ZaQ+eResjS4unYAAAAABJRU5ErkJggg==';
+
+
 function placeCities() {
   G.cities = [];
   const target = CONFIG.cityCount;
@@ -901,12 +917,16 @@ function moveUnit(unit, tr, tc) {
       army.orders = null;
       const city = getCityAt(tr, tc);
       if (city && city.faction !== army.faction) {
-        const wasFriendly = city.faction === army.faction;
+        // Destroy all enemy units in the city
+        const enemiesInCity = getUnitsAt(tr, tc).filter(u => u.faction !== army.faction && u.faction !== FACTION.NONE);
+        for (const enemy of enemiesInCity) {
+          removeUnit(enemy);
+        }
         city.faction = army.faction;
         city.production = null;
         city.turnsLeft = 0;
         city.built = {};
-        if (army.faction === FACTION.P1 && !wasFriendly) capturedCityQueue.push(city);
+        if (army.faction === FACTION.P1) capturedCityQueue.push(city);
       }
       unit.movesLeft--;
       unit.moved = true;
@@ -1065,6 +1085,33 @@ function canAttack(attacker, defender) {
   return true;
 }
 
+// Show blast on the loser's position (single flash, matching original)
+let _blastActive = null;
+
+function showBlast(r, c) {
+  _blastActive = { r, c, startTime: Date.now() };
+  render();
+  // Clear blast after delay
+  setTimeout(() => {
+    _blastActive = null;
+    render();
+  }, 500);
+}
+
+function drawBlast() {
+  if (!_blastActive || !_blastImg.complete) return;
+  const vr = _blastActive.r - G.vpR;
+  const vc = _blastActive.c - G.vpC;
+  if (vr < 0 || vr >= VP_ROWS || vc < 0 || vc >= VP_COLS) return;
+  // Centered on bottom of tile, matching original (x-10, y-15 to y+5 on 20x20 blast over 10x10 tile)
+  const px = vc * TILE + TILE / 2 - TILE;
+  const py = vr * TILE + TILE - TILE * 2;
+  const size = TILE * 2;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(_blastImg, px, py, size, size);
+  ctx.imageSmoothingEnabled = true;
+}
+
 function resolveCombat(attacker, defender) {
   const aDef = UNIT_DEF[attacker.type];
   const dDef = UNIT_DEF[defender.type];
@@ -1108,12 +1155,16 @@ function resolveCombat(attacker, defender) {
   if (attackerWon) {
     attacker.hp = aHp;
     const defR = defender.r, defC = defender.c;
+    // Show blast on the loser (defender) for player battles
+    if (attacker.faction === FACTION.P1 || defender.faction === FACTION.P1) {
+      showBlast(defR, defC);
+    }
     removeUnit(defender);
 
-    // Sea units don't advance onto land tiles
+    // Sea units don't advance onto land or city tiles
     const targetTile = G.map[defR][defC];
     const seaAttackingLand = UNIT_DEF[attacker.type].domain === 'sea' &&
-      (targetTile === TERRAIN.LAND || (targetTile === TERRAIN.CITY && !isCoastal(defR, defC)));
+      (targetTile === TERRAIN.LAND || targetTile === TERRAIN.CITY);
     if (!seaAttackingLand) {
       attacker.r = defR;
       attacker.c = defC;
@@ -1144,6 +1195,10 @@ function resolveCombat(attacker, defender) {
     }
   } else {
     defender.hp = dHp;
+    // Show blast on the loser (attacker) for player battles
+    if (attacker.faction === FACTION.P1 || defender.faction === FACTION.P1) {
+      showBlast(attacker.r, attacker.c);
+    }
     removeUnit(attacker);
   }
 
@@ -2012,7 +2067,6 @@ function drawCityIcon(px, py, city) {
   } else {
     ctx.fillStyle = factionColor(faction);
     ctx.fillRect(px, py, TILE, TILE);
-    // Icon color contrasts with background
     ctx.fillStyle = (faction === FACTION.P1 || faction === FACTION.P3) ? '#000' : '#fff';
   }
 
@@ -2029,6 +2083,9 @@ function drawCityIcon(px, py, city) {
       );
     }
   }
+
+  // Draw blast overlay if active
+  drawBlast();
 
   ctx.restore();
 }
@@ -2398,8 +2455,8 @@ function handleMapClick(e) {
 
     if (Math.abs(dr) <= 1 && Math.abs(dc) <= 1 && (dr !== 0 || dc !== 0)) {
       if (canMoveTo(unit, mr, mc)) {
-        moveUnit(unit, mr, mc);
-        afterMove(unit);
+        const result = moveUnit(unit, mr, mc);
+        if (result !== 'async') afterMove(unit);
         return;
       }
     }
@@ -2423,13 +2480,26 @@ function openProductionModal(city) {
   const list = document.getElementById('prod-list');
   document.getElementById('modal-title').textContent = `${city.name} — Production`;
 
-  // Current production info
-  const curDiv = document.getElementById('prod-current');
+  // Show units in this city
+  const unitsHere = G.units.filter(u => u.r === city.r && u.c === city.c && !isInCargo(u));
+  const garrisonDiv = document.getElementById('prod-current');
+  let garrisonText = '';
   if (city.production) {
-    curDiv.textContent = `Currently building: ${UNIT_DEF[city.production].name} (${city.turnsLeft} turns left)`;
+    garrisonText = `Building: ${UNIT_DEF[city.production].name} (${city.turnsLeft} turns)\n`;
   } else {
-    curDiv.textContent = 'No production set';
+    garrisonText = 'No production set\n';
   }
+  if (unitsHere.length > 0) {
+    const summary = {};
+    for (const u of unitsHere) {
+      summary[u.type] = (summary[u.type] || 0) + 1;
+    }
+    const parts = Object.entries(summary).map(([t, n]) => `${n} ${UNIT_DEF[t].name}${n > 1 ? 's' : ''}`);
+    garrisonText += 'Garrison: ' + parts.join(', ');
+  } else {
+    garrisonText += 'No units';
+  }
+  garrisonDiv.textContent = garrisonText;
 
   list.innerHTML = '';
 
@@ -2451,6 +2521,14 @@ function openProductionModal(city) {
       city.production = type;
       city.turnsLeft = newCost;
       closeModal();
+      // After setting production on a captured city, check for more captured cities or advance
+      if (capturedCityQueue.length > 0) {
+        const nextCity = capturedCityQueue.shift();
+        openProductionModal(nextCity);
+      } else {
+        const cur = getCurrentUnit();
+        if (!cur || cur.movesLeft <= 0) selectNextUnit();
+      }
       render();
     });
 
@@ -2592,7 +2670,68 @@ document.getElementById('bar-stats').addEventListener('click', () => {
 });
 
 // ============================================================
-// 15. NOTIFICATIONS
+// 15. SAVE / LOAD
+// ============================================================
+
+const SAVE_SLOTS = 5;
+const SAVE_KEY = 'empire-classic-2-saves';
+
+function getSaves() {
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || {}; }
+  catch { return {}; }
+}
+
+function openSlotModal(mode) {
+  const overlay = document.getElementById('save-overlay');
+  const title = document.getElementById('save-title');
+  const slotsDiv = document.getElementById('save-slots');
+  title.textContent = mode === 'save' ? 'Save Game' : 'Load Game';
+  slotsDiv.innerHTML = '';
+
+  const saves = getSaves();
+  for (let i = 1; i <= SAVE_SLOTS; i++) {
+    const slot = saves['slot' + i];
+    const btn = document.createElement('button');
+    btn.style.cssText = 'display:block; width:100%; margin:4px 0; padding:8px; background:#333; color:#fff; border:1px solid #666; font-family:Courier New,monospace; font-size:13px; cursor:pointer; text-align:left;';
+    if (slot) {
+      btn.textContent = `Slot ${i}: Turn ${slot.turn} — ${slot.date}`;
+    } else {
+      btn.textContent = `Slot ${i}: Empty`;
+    }
+    btn.addEventListener('click', () => {
+      if (mode === 'save') {
+        const saves = getSaves();
+        saves['slot' + i] = {
+          turn: G.turn,
+          date: new Date().toLocaleDateString(),
+          state: JSON.stringify(G),
+        };
+        localStorage.setItem(SAVE_KEY, JSON.stringify(saves));
+        overlay.style.display = 'none';
+        queueNotification(`Game saved to Slot ${i}.`);
+      } else {
+        if (!slot) { queueNotification('Empty slot.'); return; }
+        const restored = JSON.parse(slot.state);
+        Object.assign(G, restored);
+        updateFog();
+        overlay.style.display = 'none';
+        render();
+        queueNotification(`Game loaded from Slot ${i}.`);
+      }
+    });
+    slotsDiv.appendChild(btn);
+  }
+  overlay.style.display = 'flex';
+}
+
+document.getElementById('bar-save').addEventListener('click', () => openSlotModal('save'));
+document.getElementById('bar-load').addEventListener('click', () => openSlotModal('load'));
+document.getElementById('save-cancel').addEventListener('click', () => {
+  document.getElementById('save-overlay').style.display = 'none';
+});
+
+// ============================================================
+// 16. NOTIFICATIONS
 // ============================================================
 
 let notifQueue = [];
