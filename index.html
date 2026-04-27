@@ -1282,9 +1282,15 @@ function tickProduction(faction) {
 
       completed.push({ city, unit: newUnit });
 
-      // Reset production with repeat cost
-      const cost = city.built[type] ? PROD_TABLE[type].repeat : PROD_TABLE[type].first;
-      city.turnsLeft = cost;
+      // AI reconsiders production after each unit; player cities keep building
+      if (faction !== FACTION.P1) {
+        city.production = null;
+        city.turnsLeft = 0;
+      } else {
+        // Reset production with repeat cost
+        const cost = city.built[type] ? PROD_TABLE[type].repeat : PROD_TABLE[type].first;
+        city.turnsLeft = cost;
+      }
     }
   }
   return completed;
@@ -1456,7 +1462,7 @@ function aiTurn(aiFaction) {
           }
         }
         if (!didMove) {
-          const adj = getAdjacent4(unit.r, unit.c).filter(([ar, ac]) => canMoveTo(unit, ar, ac));
+          const adj = getAdjacent8(unit.r, unit.c).filter(([ar, ac]) => canMoveTo(unit, ar, ac));
           if (adj.length > 0) {
             const [mr, mc] = adj[Math.floor(Math.random() * adj.length)];
             moveUnit(unit, mr, mc);
